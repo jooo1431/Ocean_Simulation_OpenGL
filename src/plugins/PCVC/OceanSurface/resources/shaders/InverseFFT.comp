@@ -1,0 +1,133 @@
+/*
+    Compute Shader for the butterfly operation of Fast Fourier Transform, using radix-2 DIT algorithm 
+    FFT reduces the time complexity of DFT, from o(N^2) to o(NlogN)
+    Taking the frequency domain to the time(spatial) domain
+*/
+#version 430
+#define M_PI 3.1415926535897932384626433832795
+
+// processing N/16 x N/16 work groups in parallell in the GPU 
+layout(local_size_x = 32, local_size_y = 32) in;
+
+layout(binding = 0, rgba32f) readonly uniform image2D butterflyTex; // data for butterfly operation
+layout(binding = 1, rgba32f) uniform image2D pingpong0; // input and output is interchangable in each butterfly stages like a pingpong
+layout(binding = 2, rgba32f) uniform image2D pingpong1;
+layout(binding = 3, rgba32f) uniform writeonly image2D outTex;// final output data
+
+uniform int stage; // for the butterfly stage ranging from 0 to log2(N)
+uniform int pingpong;
+uniform int direction; // horizontal or vertical 
+uniform int N;
+uniform bool inv;
+
+struct complex{
+    float real;
+    float im;
+};
+
+// add two complex
+complex add(complex c0, complex c1){
+
+    complex c;
+    c.real = c0.real + c1.real;
+    c.im = c0.im + c1.im;
+    return c;
+}
+
+// multiply two complex
+complex mul(complex c0, complex c1){
+
+    complex c;
+    c.real = c0.real * c1.real - c0.im * c1.im;
+    c.im  = c0.real * c1.im + c0.im * c1.real;
+    return c;
+}
+
+complex butterfly(vec2 top, vec2 bottom, vec2 twiddle){
+
+    complex t = complex(top.x, top.y);
+    complex b = complex(bottom.x, bottom.y);
+    complex w = complex(twiddle.x, twiddle.y);
+
+    // butterfly operation
+     return add(t, mul(w, b));
+}
+
+void butterflyOperation(){
+
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    vec4 data;
+    ivec2 idxTop;
+    ivec2 idxBottom;
+
+    // horizontal 1D FFT, each row (same y but x varying) does the computation
+    if(direction == 0){ 
+         data = imageLoad(butterflyTex, ivec2(stage, pos.x)).rgba; // in each stage, x runs through 0~N
+         idxTop = ivec2(data.b, pos.y); // top input index in b
+         idxBottom = ivec2(data.a, pos.y); // bottom input index in a
+    }
+    // vertical 1D FFT, each column (same x but y varving) does the computation
+    else if(direction == 1){ 
+         data = imageLoad(butterflyTex, ivec2(stage, pos.y)).rgba; //  in each stage, y runs through 0~N
+         idxTop = ivec2(pos.x, data.b);
+         idxBottom = ivec2(pos.x, data.a);
+    }
+
+    vec2 w = vec2(data.r, data.g);// twiddle factors in r and g
+
+     // read from texture0 and store the updates to texture1
+    if(pingpong == 0){
+    
+        // each row (same y) does the computation
+        vec2 t = imageLoad(pingpong0, idxTop).rg; // top input index in b
+        vec2 b = imageLoad(pingpong0, idxBottom).rg; // bottom input index in a
+
+        // butterfly operation
+        complex result = butterfly(t, b, w);
+
+        // using red and green channels for storing data as complex numbers
+        imageStore(pingpong1, pos, vec4(result.real, result.im, 0.0, 1.0));
+    }
+    // read from texture1 and store the updates to texture0
+    else if(pingpong == 1){
+        
+        vec2 t = imageLoad(pingpong1, idxTop).rg; 
+        vec2 b = imageLoad(pingpong1, idxBottom).rg; 
+
+        complex result = butterfly(t, b, w);
+
+        imageStore(pingpong0, pos, vec4(result.real, result.im, 0.0, 1.0));
+    }
+}
+
+// Final step of Inverse Fast Fourier Transform (-1)^m * (-1)^n * (1/N^2)
+void inverseFFT(){
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+
+    float signs[] = {1.0, -1.0};
+    int index = int(mod(int(pos.x + pos.y), 2));
+    float mul =  signs[index];
+    float result;
+
+    if(pingpong == 0){
+        result = imageLoad(pingpong0, pos).r;
+    }else if(pingpong == 1){
+        result = imageLoad(pingpong1, pos).r;
+    }
+    
+    float inv = mul * (result / (float(N) * float(N)));
+    imageStore(outTex, pos, vec4(inv, inv, inv, 1.0));
+}
+
+void main(){
+
+    // perform FFT
+    butterflyOperation();
+    // inverse the final result
+    if(inv == true)
+        inverseFFT();
+}
+
+
+
+

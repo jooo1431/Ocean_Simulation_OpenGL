@@ -1,0 +1,63 @@
+/*
+    Compute Shader for the twiddle factors and butterfly indices for the butterfly operation of FFT
+*/
+#version 430
+#define M_PI 3.1415926535897932384626433832795
+
+// x is the FFT steps and y is the 
+layout(local_size_x = 1, local_size_y = 32) in;
+
+// r and g stores the twiddle factor, b and a stores the input indices for the operation
+layout(binding = 0, rgba32f) writeonly uniform image2D butterflyTex;
+
+// ssbo for the bit-reverse computed in CPU
+layout(std430, binding = 0) buffer indices{
+     int bit_reversed[];
+}; 
+
+uniform int N; // dimension
+
+struct complex{
+    float real;
+    float im;
+};
+
+void main(void){
+
+    // horizontal axis(x) indicates the stages from 0 to log2(N)-1
+    // vertical axis(y) indicates the index value of each stage from 0 to N-1
+    vec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    float k = mod(pos.y * (float(N) / pow(2, pos.x + 1)), N);
+    complex twiddle = complex(cos(2.0*M_PI*k / float(N)), sin(2.0*M_PI*k / float(N))); // twiddle factor in euler formula
+
+    // span increases each stage by 2^(stageNum) 
+    int butterflyspan = int(pow(2, pos.x));
+
+    int butterflywing;
+    // if true, current coordinate is the output of the top butterfly wing, otherwise the bottom
+    if(mod(pos.y, pow(2, pos.x + 1)) < pow(2, pos.x))
+        butterflywing = 1;
+    else
+        butterflywing = 0;
+
+    // initial stage, bit reversed indices as input and span is 2^0(== 1)
+    if(pos.x == 0){
+        if(butterflywing == 1) // top wing
+            imageStore(butterflyTex, ivec2(pos), vec4(twiddle.real, twiddle.im, bit_reversed[int(pos.y)], bit_reversed[int(pos.y  + 1)]));
+       
+        else // bottom wing
+            imageStore(butterflyTex, ivec2(pos), vec4(twiddle.real, twiddle.im, bit_reversed[int(pos.y - 1)], bit_reversed[int(pos.y)]));
+    
+    }
+    // further stages
+    // top wing => top input is y(current location) and bottom input is y + span(arrow comes from down like /°)
+    // bottom  wing => top input is y - span(arrow falls from up like \.) and bottom input is y(current location)
+    else{ 
+        if(butterflywing == 1) // top wing
+            imageStore(butterflyTex, ivec2(pos), vec4(twiddle.real, twiddle.im, pos.y, pos.y + butterflyspan));
+        
+        else // bottom wing
+            imageStore(butterflyTex, ivec2(pos), vec4(twiddle.real, twiddle.im, pos.y - butterflyspan, pos.y));
+    }
+
+}

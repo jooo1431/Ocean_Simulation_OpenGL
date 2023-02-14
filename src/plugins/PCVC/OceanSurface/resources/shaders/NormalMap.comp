@@ -1,0 +1,133 @@
+/*
+    Compute Shader for computing normals
+    Tested:
+    - FFT-Normals from Tessendorf's paper 
+    - Sobel Operation on Heightmaps 
+    - per triangle normals in Geometry Shader renders tiled meshes on surface
+    - per vertex normals
+*/
+#version 430
+#define M_PI 3.1415926535897932384626433832795
+
+// processing N/16 x N/16 work groups in parallell in the GPU 
+layout(local_size_x = 32, local_size_y = 32) in;
+
+layout(binding = 0, rgba32f) readonly uniform image2D heightMap;
+layout(binding = 1, rgba32f) readonly uniform image2D normalX;
+layout(binding = 2, rgba32f) readonly uniform image2D normalZ;
+layout(binding = 3, rgba32f) writeonly uniform image2D normalMap;
+
+layout(std430, binding = 1) buffer data{
+     float maxMin[];
+};
+
+uniform sampler2D height;
+uniform float waveHeight;
+uniform int N;
+uniform float choppiness;
+
+// FFT normals from the original paper
+void FFTNormals(){
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+
+    float nx = imageLoad(normalX, pos).r * choppiness;
+    float nz = imageLoad(normalZ, pos).r * choppiness;
+    float factor = sqrt(1.0 + (nx*nx + nz*nz));
+
+    imageStore(normalMap, pos, factor * vec4(-nx, 1.0, -nz, 1.0));
+}
+
+// Sobel operation normals
+void SobelNormals(){
+
+    ivec2 center = ivec2(gl_GlobalInvocationID.xy);
+
+    float tl =  imageLoad(heightMap, center + ivec2(-1,-1)).r;
+    float t =  imageLoad(heightMap, center + ivec2(0,-1)).r;
+    float tr =  imageLoad(heightMap, center + ivec2(1,-1)).r;
+    float l =  imageLoad(heightMap, center + ivec2(-1,0)).r;
+    float r =  imageLoad(heightMap, center + ivec2(1,0)).r;
+    float bl =  imageLoad(heightMap, center + ivec2(-1,1)).r;
+    float b =  imageLoad(heightMap, center + ivec2(0,1)).r;
+    float br =  imageLoad(heightMap, center + ivec2(1,1)).r;
+
+    vec3 normal;
+
+    normal.x = (tl + 2.0*l + bl) - (tr + 2.0*r + br);
+    normal.y = 1.0;
+    normal.z = (tl + 2.0*t + tr) - (bl + 2.0*b + br);
+
+    imageStore(normalMap, center, vec4(normal, 1.0));
+}
+
+// loading normal map as sampler2D -> different?
+void SobelVer3(){
+
+    ivec2 center = ivec2(gl_GlobalInvocationID.xy);
+    vec2 texCoord = center / float(N);
+
+    float stepsize = 1.0 / float(N);
+
+    float tl =  texture(height, texCoord + vec2(-stepsize,stepsize)).r;
+    float t =  texture(height, texCoord + ivec2(0,stepsize)).r;
+    float tr =  texture(height, texCoord + ivec2(stepsize,stepsize)).r;
+    float l =  texture(height, texCoord + ivec2(-stepsize,0)).r;
+    float r =  texture(height, texCoord + ivec2(stepsize,0)).r;
+    float bl =  texture(height, texCoord + ivec2(-stepsize,-stepsize)).r;
+    float b =  texture(height, texCoord + ivec2(0,-stepsize)).r;
+    float br =  texture(height, texCoord + ivec2(stepsize,-stepsize)).r;
+
+    vec3 normal;
+
+    normal.x = (tl + 2.0*l + bl) - (tr + 2.0*r + br);
+    normal.y = 1.0;
+    normal.z = (tl + 2.0*t + tr) - (bl + 2.0*b + br);
+
+    imageStore(normalMap, center, vec4(normal, 1.0) );
+
+}
+
+// per vertex normals, taking into account all the faces that share a vertex
+void perVertexNormals(){
+
+    ivec2 pixel_coord = ivec2(gl_GlobalInvocationID.xy);
+
+	float texel = 1.f / float(N);
+	float texel_size = 1000.0 * texel;
+
+	vec3 center = imageLoad(heightMap, pixel_coord).xyz;
+	vec3 right = vec3(texel_size, 0.f, 0.f) + imageLoad(heightMap, ivec2(clamp(pixel_coord.x + 1, 0, N - 1), pixel_coord.y)).xyz - center;
+	vec3 left = vec3(-texel_size, 0.f, 0.f) + imageLoad(heightMap, ivec2(clamp(pixel_coord.x - 1, 0, N - 1), pixel_coord.y)).xyz - center;
+	vec3 top = vec3(0.f, 0.f, -texel_size) + imageLoad(heightMap, ivec2(pixel_coord.x, clamp(pixel_coord.y - 1, 0, N - 1))).xyz - center;
+	vec3 bottom = vec3(0.f, 0.f, texel_size) + imageLoad(heightMap, ivec2(pixel_coord.x, clamp(pixel_coord.y + 1, 0, N - 1))).xyz - center;
+
+	vec3 top_right = cross(right, top);
+	vec3 top_left = cross(top, left);
+	vec3 bottom_left = cross(left, bottom);
+	vec3 bottom_right = cross(bottom, right);
+
+	imageStore(normalMap, pixel_coord, vec4(top_right + top_left + bottom_right + bottom_left, 1.f));
+}
+
+
+// collect maximum and minimum heightdata
+void getHData(){
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+
+    float height = waveHeight * imageLoad(heightMap, pos).r;
+    if(height > maxMin[0]) maxMin[0] = height; // height max
+    else if (height < maxMin[1]) maxMin[1] = height; // height min
+    
+}
+
+void main(void){
+    //SobelVer3();
+    //SobelNormals();
+    FFTNormals();
+    //perVertexNormals();
+    getHData();
+}
+
+
+
+

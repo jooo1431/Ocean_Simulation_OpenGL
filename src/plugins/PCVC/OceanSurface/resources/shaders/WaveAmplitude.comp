@@ -1,0 +1,102 @@
+/*
+    Compute Shader for the time-dependent variables htilde(k,t) for the amplitudes
+    This amplitude is computed every frame and used as an ingredient for further FFT operation to create the maps
+    Height field is the sum of sinusoids at the horizontal position (x,z) with amplitudes
+*/
+#version 430
+#define M_PI 3.1415926535897932384626433832795
+
+// local work group size of the compute shader
+layout(local_size_x = 32, local_size_y = 32) in;
+
+// write height field data to new texture
+layout(binding = 0, rgba32f) writeonly uniform image2D tildeHkt_dy;
+layout(binding = 1, rgba32f) writeonly uniform image2D tildeHkt_dx;
+layout(binding = 2, rgba32f) writeonly uniform image2D tildeHkt_dz;
+layout(binding = 3, rgba32f) writeonly uniform image2D slope_x;
+layout(binding = 4, rgba32f) writeonly uniform image2D slope_z;
+// read time-independent data from previously defined texture
+layout(binding = 5, rgba32f) readonly uniform image2D tildeH0k;
+layout(binding = 6, rgba32f) readonly uniform image2D tildeH0_minusk;
+
+uniform float len;
+uniform float t; // time
+uniform int N; // dimension
+
+struct complex{
+    float real;
+    float im;
+};
+
+// add two complex
+complex add(complex c0, complex c1){
+
+    complex c;
+    c.real = c0.real + c1.real;
+    c.im = c0.im + c1.im;
+    return c;
+}
+
+// multiply two complex
+complex mul(complex c0, complex c1){
+
+    complex c;
+    c.real = (c0.real * c1.real) - (c0.im * c1.im);
+    c.im  = (c0.real * c1.im) + (c0.im * c1.real);
+    return c;
+}
+
+// conjugate the complex 
+complex conj(complex c){
+
+    complex c_conj = complex(c.real, -c.im);
+    return c_conj;
+}
+
+void main(void){
+
+    vec2 pos = ivec2(gl_GlobalInvocationID.xy) - float(N) / 2.0;
+    vec2 k = vec2(2.0 * M_PI * pos.x / len, 2.0 * M_PI * pos.y / len); // wave vector (x,z)
+    //vec2 pos = ivec2(gl_GlobalInvocationID.xy);
+    //vec2 k = vec2(M_PI * (2.0 * pos.x- N) / len, M_PI * (2.0 * pos.y- N) / len); // wave vector (x,z)
+
+    float k_length = length(k);
+    if(k_length < 0.00001) k_length = 0.00001; // avoid division by 0
+
+    float w = sqrt(9.81 * k_length); // dispersion relation w(k)
+    
+    complex tildeH0k = complex(imageLoad(tildeH0k, ivec2(gl_GlobalInvocationID.xy)).r, imageLoad(tildeH0k, ivec2(gl_GlobalInvocationID.xy)).g);
+    complex tildeH0_minusk = complex(imageLoad(tildeH0_minusk, ivec2(gl_GlobalInvocationID.xy)).r, imageLoad(tildeH0_minusk, ivec2(gl_GlobalInvocationID.xy)).g);
+    complex tildeH0_minusk_conj = conj(tildeH0_minusk);
+
+    // euler formula
+    complex exp_iwt = complex(float(cos(w*t)), float(sin(w*t)));
+    complex exp_iwt_inv = complex(float(cos(w*t)), float(-sin(w*t)));
+
+    // amplitude htilde(k,t) of dy for vertical height field
+    complex amp_dy = add(mul(tildeH0k, exp_iwt), mul(tildeH0_minusk_conj, exp_iwt_inv));
+
+    // amplitude htilde(k,t) of dx for horizontal heightfield
+    complex dx = complex(0.0, -k.x/k_length);
+    complex amp_dx = mul(dx, amp_dy);
+
+    // amplitude htilde(k,t) of dz for horizontal heightfield
+    complex dz = complex(0.0, -k.y/k_length);
+    complex amp_dz = mul(dz, amp_dy);
+
+    // x-slope of amplitude htilde(k,t) for normals
+    complex sx = complex(0.0, k.x);
+    complex slopeX = mul(sx, amp_dy);
+
+    // z-slope of amplitude htilde(k,t) for normals
+    complex sz = complex(0.0, k.y);
+    complex slopeZ = mul(sz, amp_dy);
+
+    imageStore(tildeHkt_dy, ivec2(gl_GlobalInvocationID.xy), vec4(amp_dy.real, amp_dy.im, 0.0 ,1.0));
+    imageStore(tildeHkt_dx, ivec2(gl_GlobalInvocationID.xy), vec4(amp_dx.real, amp_dx.im, 0.0 ,1.0));
+    imageStore(tildeHkt_dz, ivec2(gl_GlobalInvocationID.xy), vec4(amp_dz.real, amp_dz.im, 0.0 ,1.0));
+    imageStore(slope_x, ivec2(gl_GlobalInvocationID.xy), vec4(slopeX.real, slopeX.im, 0.0 ,1.0));
+    imageStore(slope_z, ivec2(gl_GlobalInvocationID.xy), vec4(slopeZ.real, slopeZ.im, 0.0 ,1.0));
+
+}
+

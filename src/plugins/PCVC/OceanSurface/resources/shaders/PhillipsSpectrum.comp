@@ -1,0 +1,62 @@
+/*
+    Compute Shader for the time-independent variables htilde0(k) and htilde0(-k) in the initial amplitude computation
+    Wave formation is described as a set of sub-waves in a patch that sums up to visible waves
+*/
+#version 430
+
+#define M_PI 3.1415926535897932384626
+
+// local work group size of the compute shader
+layout(local_size_x = 32, local_size_y = 32) in;
+
+// store time-independent data to texture
+layout(binding = 0, rgba32f) writeonly uniform image2D tildeH0k;
+layout(binding = 1, rgba32f) writeonly uniform image2D tildeH0_minusk;
+
+uniform sampler2D gaussRnd; // Gaussian Random values sampled on the CPU
+
+uniform int N; // FFT resolution
+uniform float len; // length of 
+uniform float A; // Phillips spectrum constant
+uniform vec2 windDir; // Wind direction
+uniform float windSpeed;  //windspeed
+uniform float l; // suppression factor
+const float g = 9.81; // gravitational constant
+
+float PhillipsSpectrum(vec2 k){
+
+    float L = windSpeed * windSpeed / g; 
+    
+    float k_length = length(k);
+    if(k_length < 0.00001) k_length = 0.00001; // avoid division by 0
+    float kLenSq = k_length * k_length;
+
+    float k_dot_w = dot(normalize(k), normalize(windDir));
+
+    // additional factor to fix the poor convergenvce when the magnitude of wave vector k is large
+    float fac = exp(-1.0 * kLenSq * l * l);
+
+    float power = 2.0; // large value of pow makes the waves more aligned to the wind ??
+    float result = A / (kLenSq * kLenSq) * exp(-1.0f / (kLenSq * L * L)) * pow(k_dot_w, power) * fac;
+
+    return result;
+}
+
+void main(){
+
+    vec2 pos = vec2(gl_GlobalInvocationID.xy) - (float(N) / 2.0);
+    vec2 k = vec2((2.0 * M_PI * pos.x) / len, (2.0 * M_PI * pos.y) / len); // wave vector (x,z)
+
+    //float h0k = sqrt(PhillipsSpectrum(k)) / sqrt(2.0); //뭔차이야 바꿔보셈 나중에
+    float h0k = clamp(sqrt(PhillipsSpectrum(k)) / sqrt(2.0), -4000.0, 4000.0);
+
+    //float h0minusk = sqrt(PhillipsSpectrum(k)) / sqrt(2.0);
+    float h0minusk = clamp(sqrt(PhillipsSpectrum(-k)) / sqrt(2.0), -4000.0, 4000.0);
+
+    vec4 gaussRand = texture(gaussRnd, vec2(gl_GlobalInvocationID.xy) / float(N));
+
+    imageStore(tildeH0k, ivec2(gl_GlobalInvocationID.xy), vec4(gaussRand.xy*h0k, 0, 1));
+    imageStore(tildeH0_minusk, ivec2(gl_GlobalInvocationID.xy), vec4(gaussRand.zw* h0minusk, 0, 1));
+
+    
+}
