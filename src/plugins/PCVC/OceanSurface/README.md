@@ -9,7 +9,7 @@
  and the textures(as data storage) used for the intermediate computations are also displayed.
  
 ## Screenshot
- ![Demo](https://github.tik.uni-stuttgart.de/VISUSpcvc/2022-ws-st180639/blob/master/src/plugins/PCVC/OceanSurface/Demo.png)
+ ![Demo](src/plugins/PCVC/OceanSurface/Demo.png)
  
  ## Dependencies
  Using OGL4Core developed at the Visualization Research Center of the University of Stuttgart (VISUS). 
